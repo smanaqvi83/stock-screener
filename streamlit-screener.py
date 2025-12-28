@@ -11,14 +11,14 @@ def get_commit_id():
     try:
         return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v4.7.0-Full-Restoration"
+        return "v4.8.0-Table-Restored"
 
 COMMIT_ID = get_commit_id()
 SYNC_TIME = datetime.now().strftime("%H:%M:%S")
 
 st.set_page_config(page_title="QuantFlow Hunter Pro", layout="wide", page_icon="🎯")
 
-# --- 2. SIDEBAR (RESTORED DROPDOWNS) ---
+# --- 2. SIDEBAR ---
 st.sidebar.header("System Status")
 st.sidebar.success(f"**Build:** {COMMIT_ID}\n**Sync:** {SYNC_TIME}")
 
@@ -30,7 +30,7 @@ selected_preset = st.sidebar.selectbox("Preset List", psx_list if market_choice 
 manual_ticker = st.sidebar.text_input("OR Type Manual Symbol")
 ticker_to_run = manual_ticker.upper() if manual_ticker else selected_preset
 
-# --- 3. THE ANNOTATED ENGINE ---
+# --- 3. THE ENGINE ---
 def run_hunter_engine(symbol, is_psx):
     ticker_str = f"{symbol}.KA" if is_psx else symbol
     ticker_obj = yf.Ticker(ticker_str)
@@ -61,12 +61,18 @@ def run_hunter_engine(symbol, is_psx):
             color = "rgba(0, 255, 255, 0.6)" if (is_124 and violations == 0) else "rgba(255, 165, 0, 0.4)"
             
             all_zones.append({
-                "date": df.index[i], "high": b_high, "low": b_low,
-                "type": "PRISTINE" if violations == 0 else "VIOLATED",
-                "color": color, "l1_idx": df.index[i-1], "l4_idx": df.index[i+1],
-                "l1_h": float(df['High'].iloc[i-1]), "l4_h": float(df['High'].iloc[i+1]),
-                "ratio": f"1:{round(l1_size/l2_size,1)} | 4:{round(l4_size/l2_size,1)}",
-                "is_124": is_124, "age": len(post_df)
+                "Date": df.index[i].strftime('%Y-%m-%d'),
+                "High (Ceiling)": b_high,
+                "Low (Floor)": b_low,
+                "Type": "PRISTINE" if violations == 0 else "VIOLATED",
+                "Color": color,
+                "Ratio": f"1:{round(l1_size/l2_size,1)} | 4:{round(l4_size/l2_size,1)}",
+                "is_124": is_124,
+                "Age": len(post_df),
+                "Violations": violations,
+                # Technical values for internal logic
+                "l1_idx": df.index[i-1], "l4_idx": df.index[i+1],
+                "l1_h": float(df['High'].iloc[i-1]), "l4_h": float(df['High'].iloc[i+1])
             })
 
     ctx = {
@@ -84,25 +90,25 @@ if ticker_to_run:
     if df is not None:
         st.header(f"📊 {ticker_to_run} Strategic Dashboard")
         
-        # --- RESTORED METRIC COLUMNS ---
+        # --- METRIC COLUMNS ---
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Live Price", f"{ctx['price']:.2f}")
         m2.metric("Trend (30/50)", ctx['ema_status'])
         m3.metric("Power (TR/ATR)", f"{ctx['tr_atr']:.2f}x")
         m4.metric("Vol Multiplier", f"{ctx['vol_ratio']:.2f}x")
         
-        pristine = [z for z in zones if z['type'] == "PRISTINE" and z['is_124']]
-        if pristine:
-            best = max(pristine, key=lambda x: x['age'])
-            m5.metric("Anchor Age", f"{best['age']}d")
+        pristine_zones = [z for z in zones if z['Type'] == "PRISTINE" and z['is_124']]
+        if pristine_zones:
+            best = max(pristine_zones, key=lambda x: x['Age'])
+            m5.metric("Best Anchor Age", f"{best['Age']}d")
             
-            # --- RESTORED VERDICT ---
+            # --- VERDICT ---
             st.markdown("---")
-            dist = ((ctx['price'] - best['high']) / best['high']) * 100
+            dist = ((ctx['price'] - best['High (Ceiling)']) / best['High (Ceiling)']) * 100
             v1, v2 = st.columns([1, 2])
             if dist < 3.5 and ctx['ema_status'] == "BULLISH":
                 v1.success("🛡️ VERDICT: BUY AUTHORIZED")
-                v2.success(f"Strategy: Price is testing the Unfilled Order Candle from {best['date'].strftime('%Y-%m-%d')}.")
+                v2.success(f"Strategy: Price is testing the Unfilled Order Candle from {best['Date']}.")
             else:
                 v1.info("🛡️ VERDICT: MONITORING")
                 v2.write(f"Wait for pullback. Nearest Pristine Anchor is {dist:.1f}% away.")
@@ -115,13 +121,23 @@ if ticker_to_run:
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#ff9900', width=2), name='EMA 50'))
 
         for z in zones:
-            fig.add_shape(type="rect", x0=z['date'], x1=df.index[df.index.get_loc(z['date'])+1], 
-                          y0=z['low'], y1=z['high'], fillcolor=z['color'], line=dict(width=1))
+            # Drawing zones
+            fig.add_shape(type="rect", x0=z['Date'], x1=df.index[df.index.get_loc(pd.to_datetime(z['Date']))+1], 
+                          y0=z['Low (Floor)'], y1=z['High (Ceiling)'], fillcolor=z['Color'], line=dict(width=1))
             
             # Annotations: 1, 2, 4
             fig.add_annotation(x=z['l1_idx'], y=z['l1_h'], text="1", showarrow=False, font=dict(color="white"), yshift=10)
-            fig.add_annotation(x=z['date'], y=z['high'], text="2", showarrow=False, font=dict(color="cyan", size=14), yshift=15)
+            fig.add_annotation(x=z['Date'], y=z['High (Ceiling)'], text="2", showarrow=False, font=dict(color="cyan", size=14), yshift=15)
             fig.add_annotation(x=z['l4_idx'], y=z['l4_h'], text="4", showarrow=False, font=dict(color="yellow", size=16), yshift=20)
 
         fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
+
+        # --- RESTORED AUDIT TABLE ---
+        st.subheader("📋 Unfilled Order Candle Audit Log")
+        if zones:
+            # Displaying the table with only relevant columns for the user
+            zone_table = pd.DataFrame(zones).sort_values(by="Date", ascending=False)
+            st.table(zone_table[['Date', 'High (Ceiling)', 'Type', 'Ratio', 'Age', 'Violations']])
+        else:
+            st.info("No institutional bases detected in this lookback period.")
