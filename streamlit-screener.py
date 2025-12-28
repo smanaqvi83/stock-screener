@@ -11,7 +11,7 @@ def get_commit_id():
     try:
         return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v1.7.5-Metric-Values-Final"
+        return "v1.8.0-Entry-Advice-Live"
 
 COMMIT_ID = get_commit_id()
 APP_VERSION = f"QuantFlow {COMMIT_ID}"
@@ -34,6 +34,7 @@ ticker_to_run = manual_ticker.upper() if manual_ticker else selected_preset
 
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**Build Hash:** `{COMMIT_ID}`")
+st.sidebar.caption(f"**Version:** {APP_VERSION}")
 st.sidebar.caption(f"**Instance Sync:** {SYNC_TIME}")
 
 # --- ANALYSIS ENGINE ---
@@ -67,8 +68,6 @@ def run_pattern_tracker(symbol, is_psx):
             break 
 
     res = {"found": setup_found, "ticker": ticker_str}
-    
-    # Current values for metrics
     res["price"] = float(df['Close'].iloc[-1])
     res["tr_val"] = float(df['TR'].iloc[-1])
     res["atr_val"] = float(df['ATR'].iloc[-1])
@@ -82,44 +81,59 @@ def run_pattern_tracker(symbol, is_psx):
         post_setup_df = df.iloc[base_idx+1:]
         violation_days = post_setup_df[post_setup_df['Low'] < base_high]
         
+        # Entry Advice Logic
+        dist_from_ceiling = ((res["price"] - base_high) / base_high) * 100
+        
         res.update({
             "base_high": base_high,
             "base_low": base_low,
             "base_date": df.index[base_idx],
             "white_area_clean": violation_days.empty,
             "violation_count": len(violation_days),
+            "distance_pct": dist_from_ceiling
         })
     
     return df, res
 
 # --- MAIN DASHBOARD ---
 if ticker_to_run:
-    with st.spinner(f'Searching for {ticker_to_run} Setup...'):
+    with st.spinner(f'Evaluating {ticker_to_run}...'):
         df, res = run_pattern_tracker(ticker_to_run, market_choice == "PSX (Pakistan)")
     
     if df is not None:
         st.header(f"🏢 {res['ticker']} Analysis Dashboard")
 
-        # --- TOP METRICS WITH VALUES ---
+        # --- TOP METRICS ---
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Live Price", f"{res['price']:.2f}")
         
         if res['found']:
-            # Value of the Ceiling (Base High)
-            m2.metric("Base Ceiling (Value)", f"{res['base_high']:.2f}")
+            m2.metric("Base Ceiling", f"{res['base_high']:.2f}")
             w_status = "CLEAN" if res['white_area_clean'] else "VIOLATED"
-            m3.metric("White Area Integrity", w_status, 
-                      delta=f"{res['violation_count']} Dips Below {res['base_high']:.1f}" if not res['white_area_clean'] else "No Dips", 
+            m3.metric("White Area", w_status, 
+                      delta=f"{res['violation_count']} Dips" if not res['white_area_clean'] else "No Dips", 
                       delta_color="normal" if res['white_area_clean'] else "inverse")
-        else:
-            m2.metric("Base Ceiling", "No Setup")
-            m3.metric("White Area", "N/A")
             
-        # Value of TR vs ATR
-        m4.metric("Power Meter (TR/ATR)", f"{res['tr_atr_ratio']:.2f}x", 
-                  delta=f"TR:{res['tr_val']:.1f} | ATR:{res['atr_val']:.1f}",
-                  delta_color="normal" if res['momentum'] else "inverse")
-        
+            m4.metric("Power Meter", f"{res['tr_atr_ratio']:.2f}x", 
+                      delta=f"TR:{res['tr_val']:.1f}",
+                      delta_color="normal" if res['momentum'] else "inverse")
+
+            # --- ENTRY ADVICE BOX ---
+            st.markdown("---")
+            a1, a2 = st.columns([1, 2])
+            with a1:
+                st.subheader("💡 Entry Advice")
+                if res['distance_pct'] < 2.0:
+                    st.success(f"**Value Zone:** Price is only {res['distance_pct']:.2f}% from ceiling. High Reward/Risk.")
+                elif res['distance_pct'] < 5.0:
+                    st.info(f"**Fair Zone:** Price is {res['distance_pct']:.2f}% from ceiling. Standard Entry.")
+                else:
+                    st.warning(f"**Overextended:** Price is {res['distance_pct']:.2f}% above ceiling. Wait for a dip.")
+            with a2:
+                st.subheader("🛡️ Risk Parameters")
+                st.write(f"**Stop Loss:** {res['base_low']:.2f} (Bottom of Unfilled Order Candle)")
+                st.write(f"**White Area Ceiling:** {res['base_high']:.2f}")
+
         # --- THE CHART ---
         fig = go.Figure()
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'))
@@ -127,12 +141,10 @@ if ticker_to_run:
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='yellow', width=1.5), name='EMA 50'))
         
         if res['found']:
-            # Highlight Unfilled Order Candle
             fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[df.index.get_loc(res['base_date'])+1], 
                           y0=res['base_low'], y1=res['base_high'],
                           fillcolor="rgba(255, 0, 0, 0.6)", line=dict(color="Red", width=2))
             
-            # Watermarked White Area (Light Blue)
             fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[-1], 
                           y0=res['base_high'], y1=df['High'].max() * 1.15,
                           fillcolor="rgba(173, 216, 230, 0.15)", line=dict(width=0))
@@ -150,9 +162,5 @@ if ticker_to_run:
         st.plotly_chart(fig, use_container_width=True)
 
         # --- VERDICT ---
-        if res['found']:
-            if res['white_area_clean'] and res['momentum']:
-                st.success(f"✅ **GOLDEN SETUP:** Institutional footprint found for {res['ticker']}. Price is in the Sky Zone.")
-                st.balloons()
-        else:
+        if not res['found']:
             st.error(f"❌ No valid 1-2-4 setup found for {res['ticker']} in 60d scan.")
