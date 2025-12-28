@@ -141,4 +141,16 @@ if ticker_to_run:
 
             fig.add_hline(y=res['base_high'], line_color="red", line_dash="dot", annotation_text="CEILING")
 
-        fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False, margin=dict(l=10, r=
+        fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10))
+        st.plotly_chart(fig, use_container_width=True)
+
+        # --- VERDICT MESSAGES (At Bottom) ---
+        st.markdown("---")
+        if res['found']:
+            if res['white_area_clean'] and res['pulse'] and res['momentum']:
+                st.success(f"✅ **GOLDEN SETUP:** {res['ticker']} is in a clean White Area with institutional force.")
+                st.balloons()
+            else:
+                st.warning(f"⚠️ **SETUP FOUND:** Institutional anchor exists for {res['ticker']}, but check the Power Meter or White Area violations.")
+        else:
+            st.error(f"❌ **No valid 1-2-4 setup found for {res['ticker']}** in the last 60 days.")
