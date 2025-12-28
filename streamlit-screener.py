@@ -11,7 +11,7 @@ def get_commit_id():
     try:
         return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v4.8.0-Table-Restored"
+        return "v4.9.0-Interactive-Audit"
 
 COMMIT_ID = get_commit_id()
 SYNC_TIME = datetime.now().strftime("%H:%M:%S")
@@ -70,7 +70,6 @@ def run_hunter_engine(symbol, is_psx):
                 "is_124": is_124,
                 "Age": len(post_df),
                 "Violations": violations,
-                # Technical values for internal logic
                 "l1_idx": df.index[i-1], "l4_idx": df.index[i+1],
                 "l1_h": float(df['High'].iloc[i-1]), "l4_h": float(df['High'].iloc[i+1])
             })
@@ -88,7 +87,7 @@ if ticker_to_run:
     df, zones, ctx = run_hunter_engine(ticker_to_run, market_choice == "PSX (Pakistan)")
     
     if df is not None:
-        st.header(f"📊 {ticker_to_run} Strategic Dashboard")
+        st.header(f"📊 {ticker_to_run} Interactive Dashboard")
         
         # --- METRIC COLUMNS ---
         m1, m2, m3, m4, m5 = st.columns(5)
@@ -101,43 +100,48 @@ if ticker_to_run:
         if pristine_zones:
             best = max(pristine_zones, key=lambda x: x['Age'])
             m5.metric("Best Anchor Age", f"{best['Age']}d")
-            
-            # --- VERDICT ---
-            st.markdown("---")
-            dist = ((ctx['price'] - best['High (Ceiling)']) / best['High (Ceiling)']) * 100
-            v1, v2 = st.columns([1, 2])
-            if dist < 3.5 and ctx['ema_status'] == "BULLISH":
-                v1.success("🛡️ VERDICT: BUY AUTHORIZED")
-                v2.success(f"Strategy: Price is testing the Unfilled Order Candle from {best['Date']}.")
-            else:
-                v1.info("🛡️ VERDICT: MONITORING")
-                v2.write(f"Wait for pullback. Nearest Pristine Anchor is {dist:.1f}% away.")
         else:
             m5.metric("Anchor", "None Found")
 
+        # --- INTERACTIVE SELECTOR ---
+        st.markdown("---")
+        st.subheader("📋 Unfilled Candle Inspector")
+        if zones:
+            zone_dates = [z['Date'] for z in zones]
+            selected_date = st.selectbox("Select an Unfilled Candle Date to Inspect:", zone_dates)
+            current_zone = next(z for z in zones if z['Date'] == selected_date)
+            
+            v1, v2 = st.columns([1, 2])
+            if current_zone['Type'] == "PRISTINE":
+                v1.success(f"ZONE: {current_zone['Type']}")
+            else:
+                v1.warning(f"ZONE: {current_zone['Type']}")
+            v2.write(f"**Stats for {selected_date}:** Ratio: {current_zone['Ratio']} | Age: {current_zone['Age']}d | Violations: {current_zone['Violations']}")
+        
         # --- THE CHART ---
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price")])
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA30'], line=dict(color='#00d1ff', width=2), name='EMA 30'))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#ff9900', width=2), name='EMA 50'))
 
         for z in zones:
-            # Drawing zones
+            # Drawing all zones but emphasizing selected
+            is_selected = (z['Date'] == selected_date)
+            line_w = 4 if is_selected else 1
             fig.add_shape(type="rect", x0=z['Date'], x1=df.index[df.index.get_loc(pd.to_datetime(z['Date']))+1], 
-                          y0=z['Low (Floor)'], y1=z['High (Ceiling)'], fillcolor=z['Color'], line=dict(width=1))
+                          y0=z['Low (Floor)'], y1=z['High (Ceiling)'], fillcolor=z['Color'], line=dict(width=line_w, color="white" if is_selected else None))
             
             # Annotations: 1, 2, 4
             fig.add_annotation(x=z['l1_idx'], y=z['l1_h'], text="1", showarrow=False, font=dict(color="white"), yshift=10)
             fig.add_annotation(x=z['Date'], y=z['High (Ceiling)'], text="2", showarrow=False, font=dict(color="cyan", size=14), yshift=15)
             fig.add_annotation(x=z['l4_idx'], y=z['l4_h'], text="4", showarrow=False, font=dict(color="yellow", size=16), yshift=20)
 
+        # Interactive Zoom Logic
+        if selected_date:
+            sel_dt = pd.to_datetime(selected_date)
+            fig.update_xaxes(range=[sel_dt - pd.Timedelta(days=5), sel_dt + pd.Timedelta(days=20)])
+
         fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- RESTORED AUDIT TABLE ---
-        st.subheader("📋 Unfilled Order Candle Audit Log")
-        if zones:
-            # Displaying the table with only relevant columns for the user
-            zone_table = pd.DataFrame(zones).sort_values(by="Date", ascending=False)
-            st.table(zone_table[['Date', 'High (Ceiling)', 'Type', 'Ratio', 'Age', 'Violations']])
-        else:
-            st.info("No institutional bases detected in this lookback period.")
+        # Audit Table remains for full overview
+        st.table(pd.DataFrame(zones).sort_values(by="Date", ascending=False)[['Date', 'High (Ceiling)', 'Type', 'Ratio', 'Age']])
