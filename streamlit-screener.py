@@ -9,16 +9,16 @@ import subprocess
 # --- 1. SYSTEM AUTHENTICATION ---
 def get_commit_id():
     try:
-        return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
+        return subprocess.check_output(['rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v4.9.0-Interactive-Audit"
+        return "v5.0.0-Stable-Final"
 
 COMMIT_ID = get_commit_id()
 SYNC_TIME = datetime.now().strftime("%H:%M:%S")
 
 st.set_page_config(page_title="QuantFlow Hunter Pro", layout="wide", page_icon="🎯")
 
-# --- 2. SIDEBAR ---
+# --- 2. SIDEBAR NAVIGATION ---
 st.sidebar.header("System Status")
 st.sidebar.success(f"**Build:** {COMMIT_ID}\n**Sync:** {SYNC_TIME}")
 
@@ -30,7 +30,7 @@ selected_preset = st.sidebar.selectbox("Preset List", psx_list if market_choice 
 manual_ticker = st.sidebar.text_input("OR Type Manual Symbol")
 ticker_to_run = manual_ticker.upper() if manual_ticker else selected_preset
 
-# --- 3. THE ENGINE ---
+# --- 3. THE HUNTER ENGINE ---
 def run_hunter_engine(symbol, is_psx):
     ticker_str = f"{symbol}.KA" if is_psx else symbol
     ticker_obj = yf.Ticker(ticker_str)
@@ -49,6 +49,7 @@ def run_hunter_engine(symbol, is_psx):
     df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
     
     all_zones = []
+    # Scan for 1-2-4 patterns
     for i in range(2, len(df)-1):
         l1_size, l2_size, l4_size = df['Size'].iloc[i-1], df['Size'].iloc[i], df['Size'].iloc[i+1]
         
@@ -58,6 +59,7 @@ def run_hunter_engine(symbol, is_psx):
             violations = len(post_df[post_df['Low'] < b_high])
             
             is_124 = l4_size >= 4*l2_size
+            # Pristine = Cyan, Violated = Orange
             color = "rgba(0, 255, 255, 0.6)" if (is_124 and violations == 0) else "rgba(255, 165, 0, 0.4)"
             
             all_zones.append({
@@ -87,55 +89,65 @@ if ticker_to_run:
     df, zones, ctx = run_hunter_engine(ticker_to_run, market_choice == "PSX (Pakistan)")
     
     if df is not None:
-        st.header(f"📊 {ticker_to_run} Interactive Dashboard")
+        st.header(f"📊 {ticker_to_run} Interactive Hunter Pro")
         
-        # --- METRIC COLUMNS ---
+        # --- TOP METRIC BLOCKS ---
         m1, m2, m3, m4, m5 = st.columns(5)
         m1.metric("Live Price", f"{ctx['price']:.2f}")
         m2.metric("Trend (30/50)", ctx['ema_status'])
         m3.metric("Power (TR/ATR)", f"{ctx['tr_atr']:.2f}x")
         m4.metric("Vol Multiplier", f"{ctx['vol_ratio']:.2f}x")
         
-        pristine_zones = [z for z in zones if z['Type'] == "PRISTINE" and z['is_124']]
-        if pristine_zones:
-            best = max(pristine_zones, key=lambda x: x['Age'])
+        pristine = [z for z in zones if z['Type'] == "PRISTINE" and z['is_124']]
+        if pristine:
+            best = max(pristine, key=lambda x: x['Age'])
             m5.metric("Best Anchor Age", f"{best['Age']}d")
+            
+            # --- FINAL VERDICT ---
+            st.markdown("---")
+            dist = ((ctx['price'] - best['High (Ceiling)']) / best['High (Ceiling)']) * 100
+            v1, v2 = st.columns([1, 2])
+            if dist < 3.5 and ctx['ema_status'] == "BULLISH":
+                v1.success("🛡️ VERDICT: BUY AUTHORIZED")
+                v2.success(f"Targeting Unfilled Candle at {best['High (Ceiling)']} (Dist: {dist:.1f}%).")
+            else:
+                v1.info("🛡️ VERDICT: MONITORING")
+                v2.write(f"Wait for pullback. Nearest Pristine Anchor is {dist:.1f}% away.")
         else:
             m5.metric("Anchor", "None Found")
 
-        # --- INTERACTIVE SELECTOR ---
+        # --- INTERACTIVE INSPECTOR ---
         st.markdown("---")
-        st.subheader("📋 Unfilled Candle Inspector")
+        selected_date = None
         if zones:
             zone_dates = [z['Date'] for z in zones]
-            selected_date = st.selectbox("Select an Unfilled Candle Date to Inspect:", zone_dates)
-            current_zone = next(z for z in zones if z['Date'] == selected_date)
-            
-            v1, v2 = st.columns([1, 2])
-            if current_zone['Type'] == "PRISTINE":
-                v1.success(f"ZONE: {current_zone['Type']}")
-            else:
-                v1.warning(f"ZONE: {current_zone['Type']}")
-            v2.write(f"**Stats for {selected_date}:** Ratio: {current_zone['Ratio']} | Age: {current_zone['Age']}d | Violations: {current_zone['Violations']}")
-        
+            selected_date = st.selectbox("🎯 Unfilled Candle Inspector: Pick a date to zoom", zone_dates)
+            current_z = next(z for z in zones if z['Date'] == selected_date)
+            st.caption(f"Details: Ratio {current_z['Ratio']} | Age {current_z['Age']}d | {current_z['Type']}")
+
         # --- THE CHART ---
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price")])
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA30'], line=dict(color='#00d1ff', width=2), name='EMA 30'))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#ff9900', width=2), name='EMA 50'))
 
+        # Safe Shape Drawing
         for z in zones:
-            # Drawing all zones but emphasizing selected
-            is_selected = (z['Date'] == selected_date)
-            line_w = 4 if is_selected else 1
-            fig.add_shape(type="rect", x0=z['Date'], x1=df.index[df.index.get_loc(pd.to_datetime(z['Date']))+1], 
-                          y0=z['Low (Floor)'], y1=z['High (Ceiling)'], fillcolor=z['Color'], line=dict(width=line_w, color="white" if is_selected else None))
-            
-            # Annotations: 1, 2, 4
-            fig.add_annotation(x=z['l1_idx'], y=z['l1_h'], text="1", showarrow=False, font=dict(color="white"), yshift=10)
-            fig.add_annotation(x=z['Date'], y=z['High (Ceiling)'], text="2", showarrow=False, font=dict(color="cyan", size=14), yshift=15)
-            fig.add_annotation(x=z['l4_idx'], y=z['l4_h'], text="4", showarrow=False, font=dict(color="yellow", size=16), yshift=20)
+            try:
+                z_dt = pd.to_datetime(z['Date']).tz_localize(df.index.tz) if df.index.tz else pd.to_datetime(z['Date'])
+                idx_pos = df.index.get_loc(z_dt)
+                x1_val = df.index[idx_pos + 1] if idx_pos < len(df)-1 else df.index[idx_pos] + pd.Timedelta(days=1)
+                
+                is_sel = (z['Date'] == selected_date)
+                fig.add_shape(type="rect", x0=z['Date'], x1=x1_val, y0=z['Low (Floor)'], y1=z['High (Ceiling)'], 
+                              fillcolor=z['Color'], line=dict(width=3 if is_sel else 1, color="white" if is_sel else None))
+                
+                # Annotations: 1, 2, 4
+                fig.add_annotation(x=z['l1_idx'], y=z['l1_h'], text="1", showarrow=False, font=dict(color="white"))
+                fig.add_annotation(x=z['Date'], y=z['High (Ceiling)'], text="2", showarrow=False, font=dict(color="cyan", size=14), yshift=15)
+                fig.add_annotation(x=z['l4_idx'], y=z['l4_h'], text="4", showarrow=False, font=dict(color="yellow", size=16), yshift=20)
+            except: continue
 
-        # Interactive Zoom Logic
+        # Auto-Zoom Logic
         if selected_date:
             sel_dt = pd.to_datetime(selected_date)
             fig.update_xaxes(range=[sel_dt - pd.Timedelta(days=5), sel_dt + pd.Timedelta(days=20)])
@@ -143,5 +155,8 @@ if ticker_to_run:
         fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
-        # Audit Table remains for full overview
-        st.table(pd.DataFrame(zones).sort_values(by="Date", ascending=False)[['Date', 'High (Ceiling)', 'Type', 'Ratio', 'Age']])
+        # --- AUDIT LOG TABLE ---
+        st.subheader("📋 Unfilled Order Candle Audit Log")
+        if zones:
+            zone_table = pd.DataFrame(zones).sort_values(by="Date", ascending=False)
+            st.table(zone_table[['Date', 'High (Ceiling)', 'Type', 'Ratio', 'Age', 'Violations']])
