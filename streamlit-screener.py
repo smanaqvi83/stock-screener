@@ -4,40 +4,32 @@ import pandas as pd
 import numpy as np
 import plotly.graph_objects as go
 from datetime import datetime
-import subprocess
 
 # --- VERSION CONTROL ---
-COMMIT_ID = "v1.4.0-Stable-Scanner"
+COMMIT_ID = "v1.5.0-Unfilled-Label-Fix"
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="QuantFlow Pro", layout="wide", page_icon="📈")
 
-# --- SIDEBAR: DROPDOWN & INPUT ---
+# --- SIDEBAR ---
 st.sidebar.header("Market Selection")
 market_choice = st.sidebar.radio("Select Market", ["PSX (Pakistan)", "NYSE/NASDAQ (US)"])
 
-# Preset Tickers
 psx_list = ["SYS", "LUCK", "HUBC", "ENGRO", "PPL", "OGDC", "MCB", "EFERT"]
 us_list = ["TSM", "NVDA", "ORCL", "V", "JPM"]
 
 selected_preset = st.sidebar.selectbox("Preset List", psx_list if market_choice == "PSX (Pakistan)" else us_list)
-manual_ticker = st.sidebar.text_input("OR Type Manual Symbol (e.g. OGDC)")
+manual_ticker = st.sidebar.text_input("OR Type Manual Symbol")
 
-# Priority Logic: Use manual input if provided, otherwise dropdown
 ticker_to_run = manual_ticker.upper() if manual_ticker else selected_preset
-
-st.sidebar.markdown("---")
-st.sidebar.caption(f"**Build:** {COMMIT_ID}")
 
 # --- ANALYSIS ENGINE ---
 def run_pattern_tracker(symbol, is_psx):
     ticker_str = f"{symbol}.KA" if is_psx else symbol
     ticker_obj = yf.Ticker(ticker_str)
     
-    # Fetch 60 days
     df = ticker_obj.history(period="60d", interval="1d")
-    
-    if df.empty: return None, "No Data"
+    if df.empty: return None, None
     
     # Technical Indicators
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
@@ -48,7 +40,7 @@ def run_pattern_tracker(symbol, is_psx):
                            abs(df['Low'] - df['Close'].shift(1))))
     df['ATR'] = df['TR'].rolling(window=14).mean()
 
-    # Scan history for 1-2-4 setup (most recent in last 60 days)
+    # Scan history for 1-2-4 setup
     setup_found = False
     base_idx = -1
     for i in range(len(df)-1, 2, -1):
@@ -61,77 +53,84 @@ def run_pattern_tracker(symbol, is_psx):
             setup_found = True
             break 
 
-    if not setup_found:
-        return df, {"found": False, "ticker": ticker_str}
-
-    # Parameters
-    base_high = float(df['High'].iloc[base_idx].item())
-    base_low = float(df['Low'].iloc[base_idx].item())
-    base_date = df.index[base_idx]
-    curr_price = float(df['Close'].iloc[-1].item())
+    res = {"found": setup_found, "ticker": ticker_str}
     
-    # Violation Check (Dips back into Base High)
-    post_setup_df = df.iloc[base_idx+1:]
-    violation_days = post_setup_df[post_setup_df['Low'] < base_high]
-    white_area_clean = violation_days.empty
-
-    return df, {
-        "found": True,
-        "ticker": ticker_str,
-        "price": curr_price,
-        "base_high": base_high,
-        "base_low": base_low,
-        "base_date": base_date,
-        "white_area": white_area_clean,
-        "violation_count": len(violation_days),
-        "momentum": bool(df['TR'].iloc[-1].item() > df['ATR'].iloc[-1].item()),
-        "pulse": bool(df['EMA20'].iloc[-1].item() > df['EMA50'].iloc[-1].item()),
-        "tr_atr_ratio": float(df['TR'].iloc[-1].item() / df['ATR'].iloc[-1].item())
-    }
+    if setup_found:
+        base_high = float(df['High'].iloc[base_idx].item())
+        base_low = float(df['Low'].iloc[base_idx].item())
+        
+        # Violation Check
+        post_setup_df = df.iloc[base_idx+1:]
+        violation_days = post_setup_df[post_setup_df['Low'] < base_high]
+        
+        res.update({
+            "base_high": base_high,
+            "base_low": base_low,
+            "base_date": df.index[base_idx],
+            "white_area": violation_days.empty,
+            "violation_count": len(violation_days),
+            "momentum": bool(df['TR'].iloc[-1].item() > df['ATR'].iloc[-1].item()),
+            "pulse": bool(df['EMA20'].iloc[-1].item() > df['EMA50'].iloc[-1].item()),
+            "curr_price": float(df['Close'].iloc[-1].item())
+        })
+    
+    return df, res
 
 # --- MAIN DASHBOARD ---
 if ticker_to_run:
-    # ADDED LOADING SPINNER
-    with st.spinner(f'Searching for 1-2-4 Setup in {ticker_to_run}...'):
+    with st.spinner(f'Analyzing {ticker_to_run}...'):
         df, res = run_pattern_tracker(ticker_to_run, market_choice == "PSX (Pakistan)")
     
-    if df is not None and res['found']:
-        st.header(f"📈 {res['ticker']} Analysis")
+    if df is not None:
+        st.header(f"📊 {res['ticker']} Analysis")
         
-        # Metrics with Color Logic
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Live Price", f"{res['price']:.2f}")
-        m2.metric("Base High", f"{res['base_high']:.2f}")
-        m3.metric("White Area", "CLEAN" if res['white_area'] else "VIOLATED", 
-                  delta=f"{res['violation_count']} Dips" if not res['white_area'] else "Clear", 
-                  delta_color="normal" if res['white_area'] else "inverse")
-        m4.metric("Power Meter", f"{res['tr_atr_ratio']:.1f}x", 
-                  delta="EXPLOSIVE" if res['momentum'] else "NORMAL",
-                  delta_color="normal" if res['momentum'] else "inverse")
-
-        # Visual Chart
+        # --- 1. THE CHART ---
         fig = go.Figure()
-        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Market'))
+        fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='cyan', width=1.5), name='EMA 20'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='yellow', width=1.5), name='EMA 50'))
         
-        # Highlight: Unfilled Orders (The Anchor)
-        fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[df.index.get_loc(res['base_date'])+1], 
-                      y0=res['base_low'], y1=res['base_high'],
-                      fillcolor="rgba(255, 0, 0, 0.5)", line=dict(color="Red", width=2))
-        
-        # Highlight: White Zone
-        zone_color = "rgba(255, 255, 255, 0.05)" if res['white_area'] else "rgba(255, 0, 0, 0.05)"
-        fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[-1], 
-                      y0=res['base_high'], y1=res['price'] * 1.2,
-                      fillcolor=zone_color, line=dict(color="white", width=1, dash="dash"))
-        
-        fig.add_hline(y=res['price'], line_color="lime", annotation_text="PRICE")
-        fig.add_hline(y=res['base_high'], line_color="red", line_dash="dot", annotation_text="CEILING")
+        if res['found']:
+            # Highlight Base Candle
+            fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[df.index.get_loc(res['base_date'])+1], 
+                          y0=res['base_low'], y1=res['base_high'],
+                          fillcolor="rgba(255, 0, 0, 0.5)", line=dict(color="Red", width=2))
+            
+            # UNFILLED ORDER LABEL
+            fig.add_annotation(
+                x=res['base_date'], 
+                y=res['base_high'],
+                text="UNFILLED ORDER CANDLE",
+                showarrow=True,
+                arrowhead=2,
+                arrowcolor="red",
+                ax=0,
+                ay=-40,
+                bgcolor="red",
+                font=dict(color="white", size=12)
+            )
+
+            # White Zone Highlighting
+            fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[-1], 
+                          y0=res['base_high'], y1=df['High'].max() * 1.05,
+                          fillcolor="rgba(255, 255, 255, 0.05)", line=dict(color="white", width=1, dash="dash"))
+            fig.add_hline(y=res['base_high'], line_color="red", line_dash="dot")
 
         fig.update_layout(template="plotly_dark", height=650, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
-        
-    elif df is not None and not res['found']:
-        # ADDED SYMBOL TO ERROR MESSAGE
-        st.error(f"❌ No valid 1-2-4 Setup found in the last 60 days for {res['ticker']}. Market is likely consolidating.")
+
+        # --- 2. THE VERDICT ---
+        if res['found']:
+            if res['white_area'] and res['pulse'] and res['momentum']:
+                # ALL GREEN SUCCESS MESSAGE
+                st.success(f"✅ **Valid 1-2-4 Setup Found for {res['ticker']}!** The Unfilled Order Candle has been identified. White Area is clean and momentum is explosive.")
+                st.balloons()
+            else:
+                # PARTIAL MATCH WARNING
+                st.warning(f"⚠️ **Setup Found for {res['ticker']}**, but some health checks failed. Check the chart for White Area violations or weak momentum.")
+        else:
+            # NOT FOUND ERROR
+            st.error(f"❌ **No valid 1-2-4 setup found for {res['ticker']}** in the last 60 days.")
+
     else:
-        st.error("⚠️ Stock symbol not found. Please check ticker name.")
+        st.error(f"Data Error: {ticker_to_run} not found.")
