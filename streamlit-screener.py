@@ -11,11 +11,10 @@ def get_commit_id():
     try:
         return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v1.8.5-Watermark-Final"
+        return "v1.9.5-Strict-124-Marking"
 
 COMMIT_ID = get_commit_id()
 APP_VERSION = f"QuantFlow {COMMIT_ID}"
-SYNC_TIME = datetime.now().strftime("%H:%M:%S")
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="QuantFlow Pro", layout="wide", page_icon="📈")
@@ -35,9 +34,9 @@ ticker_to_run = manual_ticker.upper() if manual_ticker else selected_preset
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**Build Hash:** `{COMMIT_ID}`")
 st.sidebar.caption(f"**Version:** {APP_VERSION}")
-st.sidebar.caption(f"**Instance Sync:** {SYNC_TIME}")
+st.sidebar.caption(f"**Instance Sync:** {datetime.now().strftime('%H:%M:%S')}")
 
-# --- ANALYSIS ENGINE ---
+# --- ANALYSIS ENGINE (Strict 1-2-4 Logic) ---
 def run_pattern_tracker(symbol, is_psx):
     ticker_str = f"{symbol}.KA" if is_psx else symbol
     ticker_obj = yf.Ticker(ticker_str)
@@ -54,7 +53,7 @@ def run_pattern_tracker(symbol, is_psx):
                            abs(df['Low'] - df['Close'].shift(1))))
     df['ATR'] = df['TR'].rolling(window=14).mean()
 
-    # Scan history for 1-2-4 setup (Searching back 60 days)
+    # Strict 1-2-4 Pattern Scan
     setup_found = False
     base_idx = -1
     for i in range(len(df)-1, 2, -1):
@@ -62,6 +61,7 @@ def run_pattern_tracker(symbol, is_psx):
         base = df['Size'].iloc[i-1]
         leg_out = df['Size'].iloc[i]
         
+        # The Core 1-2-4 Logic
         if leg_in >= 2*base and leg_out >= 4*base:
             base_idx = i-1
             setup_found = True
@@ -82,91 +82,70 @@ def run_pattern_tracker(symbol, is_psx):
         post_setup_df = df.iloc[base_idx+1:]
         violation_days = post_setup_df[post_setup_df['Low'] < base_high]
         
-        dist_from_ceiling = ((res["price"] - base_high) / base_high) * 100
-        
         res.update({
             "base_high": base_high,
             "base_low": base_low,
             "base_date": base_date,
             "white_area_clean": violation_days.empty,
             "violation_count": len(violation_days),
-            "distance_pct": dist_from_ceiling
+            "distance_pct": ((res["price"] - base_high) / base_high) * 100
         })
     
     return df, res
 
 # --- MAIN DASHBOARD ---
 if ticker_to_run:
-    with st.spinner(f'Searching 60-day history for {ticker_to_run}...'):
+    with st.spinner(f'Checking {ticker_to_run} for Unfilled Orders...'):
         df, res = run_pattern_tracker(ticker_to_run, market_choice == "PSX (Pakistan)")
     
     if df is not None:
         st.header(f"🏢 {res['ticker']} Analysis Dashboard")
 
-        # --- TOP METRICS ---
+        # Top Metrics (Restored values)
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Live Price", f"{res['price']:.2f}")
         
         if res['found']:
-            m2.metric("Ceiling (Unfilled High)", f"{res['base_high']:.2f}")
+            m2.metric("Base Ceiling (Value)", f"{res['base_high']:.2f}")
             w_status = "CLEAN" if res['white_area_clean'] else "VIOLATED"
-            m3.metric("White Area Integrity", w_status, 
-                      delta=f"{res['violation_count']} Dips" if not res['white_area_clean'] else "No Dips", 
-                      delta_color="normal" if res['white_area_clean'] else "inverse")
-            
-            m4.metric("Power Meter", f"{res['tr_atr_ratio']:.2f}x", 
-                      delta=f"TR: {res['tr_val']:.1f}",
-                      delta_color="normal" if res['momentum'] else "inverse")
+            m3.metric("White Area", w_status, delta=f"{res['violation_count']} Dips" if not res['white_area_clean'] else "No Dips")
+            m4.metric("Power Meter (TR/ATR)", f"{res['tr_atr_ratio']:.2f}x", delta=f"TR: {res['tr_val']:.1f}")
 
-            # --- ENTRY ADVICE BOX ---
-            st.markdown("---")
-            a1, a2 = st.columns([1, 2])
-            with a1:
-                st.subheader("💡 Entry Advice")
-                if res['distance_pct'] < 2.5:
-                    st.success(f"**GOLDEN ENTRY:** Price is {res['distance_pct']:.2f}% from ceiling. Unfilled orders are close.")
-                elif res['distance_pct'] < 5.0:
-                    st.info(f"**FAIR ENTRY:** Price is {res['distance_pct']:.2f}% from ceiling.")
-                else:
-                    st.warning(f"**OVEREXTENDED:** Price is {res['distance_pct']:.2f}% above ceiling. Risk is high.")
-            with a2:
-                st.subheader("🛡️ Strategy Bounds")
-                st.write(f"**Pattern Anchor Date:** {res['base_date'].strftime('%Y-%m-%d')}")
-                st.write(f"**Stop Loss (Base Low):** {res['base_low']:.2f}")
+            # Entry Advice
+            st.info(f"💡 **Entry Advice:** Price is {res['distance_pct']:.2f}% from the Unfilled Order Ceiling ({res['base_high']:.2f}). Stop Loss: {res['base_low']:.2f}")
 
-        # --- THE CHART ---
+        # The Chart
         fig = go.Figure()
         fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='Price'))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='cyan', width=1.5), name='EMA 20'))
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='yellow', width=1.5), name='EMA 50'))
         
         if res['found']:
-            # 1. Unfilled Order Candle (RED BOX)
+            # 1. MARK THE UNFILLED ORDER CANDLE (Red Box)
             fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[df.index.get_loc(res['base_date'])+1], 
                           y0=res['base_low'], y1=res['base_high'],
                           fillcolor="rgba(255, 0, 0, 0.6)", line=dict(color="Red", width=2))
             
-            # 2. UNFILLED ORDER TEXT LABEL
+            # 2. LABEL: UNFILLED ORDER CANDLE
             fig.add_annotation(x=res['base_date'], y=res['base_high'], text="UNFILLED ORDER CANDLE",
                                showarrow=True, arrowhead=2, arrowcolor="red", ax=0, ay=-40,
                                bgcolor="red", font=dict(color="white"))
 
-            # 3. LIGHT BLUE WHITE AREA (THE SKY)
+            # 3. LIGHT BLUE WHITE AREA WITH WATERMARK
             fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[-1], 
                           y0=res['base_high'], y1=df['High'].max() * 1.15,
                           fillcolor="rgba(173, 216, 230, 0.15)", line=dict(width=0))
             
-            # 4. WATERMARK: "WHITE AREA"
             fig.add_annotation(
-                x=df.index[int((len(df) + df.index.get_loc(res['base_date']))/2)], # Centered in the zone
+                x=df.index[int((len(df) + df.index.get_loc(res['base_date']))/2)],
                 y=(res['base_high'] + df['High'].max()) / 2,
                 text="WHITE AREA",
                 font=dict(color="rgba(173, 216, 230, 0.25)", size=50),
                 showarrow=False, textangle=-20
             )
-            fig.add_hline(y=res['base_high'], line_color="red", line_dash="dot", annotation_text=f"CEILING: {res['base_high']:.2f}")
+            fig.add_hline(y=res['base_high'], line_color="red", line_dash="dot", annotation_text="CEILING")
 
-        fig.update_layout(template="plotly_dark", height=650, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10))
+        fig.update_layout(template="plotly_dark", height=650, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
 
         if not res['found']:
