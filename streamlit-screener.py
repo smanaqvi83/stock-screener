@@ -11,7 +11,7 @@ def get_commit_id():
     try:
         return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v1.2.6-Live"
+        return "v1.2.7-Live"
 
 COMMIT_ID = get_commit_id()
 APP_VERSION = f"QuantFlow {COMMIT_ID}"
@@ -19,13 +19,11 @@ SYNC_TIME = datetime.now().strftime("%H:%M:%S")
 
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="QuantFlow Dashboard", layout="wide", page_icon="📈")
-st.title("📊 QuantFlow: 1-2-4 & Pulse Strategy")
 
 # --- SIDEBAR & NAVIGATION ---
 st.sidebar.header("Market Control")
 market_choice = st.sidebar.radio("Select Market", ["PSX (Pakistan)", "NYSE/NASDAQ (US)"])
 
-# Sharia & Global Top Picks
 psx_sharia = ["SYS", "LUCK", "HUBC", "ENGRO", "PPL"]
 us_top = ["TSM", "V", "ORCL", "BRK-B", "JPM"]
 
@@ -39,7 +37,6 @@ else:
 manual_ticker = st.sidebar.text_input("Manual Search (e.g. NVDA or OGDC)")
 ticker_to_run = manual_ticker.upper() if manual_ticker else selected_ticker
 
-# Sidebar Deployment Info
 st.sidebar.markdown("---")
 st.sidebar.caption(f"**Build Hash:** `{COMMIT_ID}`")
 st.sidebar.caption(f"**Instance Sync:** {SYNC_TIME}")
@@ -47,14 +44,15 @@ st.sidebar.caption(f"**Instance Sync:** {SYNC_TIME}")
 # --- THE STRATEGY ENGINE ---
 def run_analysis(symbol, is_psx):
     ticker_str = f"{symbol}.KA" if is_psx else symbol
-    # progress=False hides the download logs in the app
     data = yf.download(ticker_str, period="60d", interval="1d", progress=False)
     
     if data.empty:
         return None, f"No data found for {ticker_str}"
     
     df = data.copy()
-    
+    ticker_info = yf.Ticker(ticker_str).info
+    company_name = ticker_info.get('longName', ticker_str)
+
     # Technical Indicators
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
@@ -67,7 +65,6 @@ def run_analysis(symbol, is_psx):
     df['ATR'] = df['TR'].rolling(window=14).mean()
     
     try:
-        # Scalar Extractions using .iloc[-1] and .item() to avoid Pandas Series errors
         curr_price = float(df['Close'].iloc[-1].item())
         open_price = float(df['Open'].iloc[-1].item())
         curr_tr = float(df['TR'].iloc[-1].item())
@@ -90,15 +87,18 @@ def run_analysis(symbol, is_psx):
         ema20_val = float(df['EMA20'].iloc[-1].item())
         ema50_val = float(df['EMA50'].iloc[-1].item())
         pulse_pass = bool(ema20_val > ema50_val and curr_price > open_price)
+        momentum_ratio = curr_tr / curr_atr if curr_atr != 0 else 0
         momentum_pass = bool(curr_tr > curr_atr)
         
         return df, {
+            "name": company_name,
             "ticker": ticker_str,
             "price": curr_price,
             "ratio_pass": ratio_pass,
             "ratio_val": ratio_val,
             "white_area_pass": white_area_pass,
             "momentum_pass": momentum_pass,
+            "momentum_ratio": momentum_ratio,
             "pulse_pass": pulse_pass,
             "tr": curr_tr,
             "atr": curr_atr,
@@ -116,22 +116,20 @@ if ticker_to_run:
         # DISPLAY CURRENT SELECTED SHARE
         st.markdown(f"## 🏢 {res['name']} ({res['ticker']})")
         st.markdown(f"**Current Status:** {'🟢 ACTIVE SIGNAL' if all([res['ratio_pass'], res['white_area_pass'], res['momentum_pass'], res['pulse_pass']]) else '⚪ MONITORING'}")
+        
         # Metrics Header
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Current Price", f"{res['price']:.2f}")
         
-        # Green/Red Ratio Metric
         m2.metric("1-2-4 Ratio", f"{res['ratio_val']:.1f}x", 
                   delta="PASS" if res['ratio_pass'] else "FAIL", 
                   delta_color="normal" if res['ratio_pass'] else "inverse")
         
-        # Green/Red White Area Metric
         m3.metric("White Area", "CLEAN" if res['white_area_pass'] else "OVERLAP", 
                   delta="SAFE" if res['white_area_pass'] else "RISKY", 
                   delta_color="normal" if res['white_area_pass'] else "inverse")
         
-        # Green/Red Momentum Metric
-        m4.metric("TR vs ATR", f"{res['tr']:.1f}/{res['atr']:.1f}", 
+        m4.metric("Power Meter (TR/ATR)", f"{res['momentum_ratio']:.1f}x", 
                   delta="EXPLOSIVE" if res['momentum_pass'] else "NORMAL", 
                   delta_color="normal" if res['momentum_pass'] else "inverse")
 
@@ -152,7 +150,7 @@ if ticker_to_run:
                 st.success(f"🚀 **GOLDEN SETUP:** {res['ticker']} is aligned for a 7-day run.")
                 st.balloons()
             else:
-                st.error("⚠️ **NO SETUP:** One or more critical conditions failed.")
+                st.info("⚠️ **WAITING:** Looking for institutional force or cleaner traffic.")
 
         # Plotly Chart
         fig = go.Figure()
