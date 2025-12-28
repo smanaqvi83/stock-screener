@@ -11,7 +11,7 @@ def get_commit_id():
     try:
         return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v1.8.0-Entry-Advice-Live"
+        return "v1.8.5-Watermark-Final"
 
 COMMIT_ID = get_commit_id()
 APP_VERSION = f"QuantFlow {COMMIT_ID}"
@@ -54,7 +54,7 @@ def run_pattern_tracker(symbol, is_psx):
                            abs(df['Low'] - df['Close'].shift(1))))
     df['ATR'] = df['TR'].rolling(window=14).mean()
 
-    # Scan history for 1-2-4 setup
+    # Scan history for 1-2-4 setup (Searching back 60 days)
     setup_found = False
     base_idx = -1
     for i in range(len(df)-1, 2, -1):
@@ -77,17 +77,17 @@ def run_pattern_tracker(symbol, is_psx):
     if setup_found:
         base_high = float(df['High'].iloc[base_idx])
         base_low = float(df['Low'].iloc[base_idx])
+        base_date = df.index[base_idx]
         
         post_setup_df = df.iloc[base_idx+1:]
         violation_days = post_setup_df[post_setup_df['Low'] < base_high]
         
-        # Entry Advice Logic
         dist_from_ceiling = ((res["price"] - base_high) / base_high) * 100
         
         res.update({
             "base_high": base_high,
             "base_low": base_low,
-            "base_date": df.index[base_idx],
+            "base_date": base_date,
             "white_area_clean": violation_days.empty,
             "violation_count": len(violation_days),
             "distance_pct": dist_from_ceiling
@@ -97,7 +97,7 @@ def run_pattern_tracker(symbol, is_psx):
 
 # --- MAIN DASHBOARD ---
 if ticker_to_run:
-    with st.spinner(f'Evaluating {ticker_to_run}...'):
+    with st.spinner(f'Searching 60-day history for {ticker_to_run}...'):
         df, res = run_pattern_tracker(ticker_to_run, market_choice == "PSX (Pakistan)")
     
     if df is not None:
@@ -108,14 +108,14 @@ if ticker_to_run:
         m1.metric("Live Price", f"{res['price']:.2f}")
         
         if res['found']:
-            m2.metric("Base Ceiling", f"{res['base_high']:.2f}")
+            m2.metric("Ceiling (Unfilled High)", f"{res['base_high']:.2f}")
             w_status = "CLEAN" if res['white_area_clean'] else "VIOLATED"
-            m3.metric("White Area", w_status, 
+            m3.metric("White Area Integrity", w_status, 
                       delta=f"{res['violation_count']} Dips" if not res['white_area_clean'] else "No Dips", 
                       delta_color="normal" if res['white_area_clean'] else "inverse")
             
             m4.metric("Power Meter", f"{res['tr_atr_ratio']:.2f}x", 
-                      delta=f"TR:{res['tr_val']:.1f}",
+                      delta=f"TR: {res['tr_val']:.1f}",
                       delta_color="normal" if res['momentum'] else "inverse")
 
             # --- ENTRY ADVICE BOX ---
@@ -123,16 +123,16 @@ if ticker_to_run:
             a1, a2 = st.columns([1, 2])
             with a1:
                 st.subheader("💡 Entry Advice")
-                if res['distance_pct'] < 2.0:
-                    st.success(f"**Value Zone:** Price is only {res['distance_pct']:.2f}% from ceiling. High Reward/Risk.")
+                if res['distance_pct'] < 2.5:
+                    st.success(f"**GOLDEN ENTRY:** Price is {res['distance_pct']:.2f}% from ceiling. Unfilled orders are close.")
                 elif res['distance_pct'] < 5.0:
-                    st.info(f"**Fair Zone:** Price is {res['distance_pct']:.2f}% from ceiling. Standard Entry.")
+                    st.info(f"**FAIR ENTRY:** Price is {res['distance_pct']:.2f}% from ceiling.")
                 else:
-                    st.warning(f"**Overextended:** Price is {res['distance_pct']:.2f}% above ceiling. Wait for a dip.")
+                    st.warning(f"**OVEREXTENDED:** Price is {res['distance_pct']:.2f}% above ceiling. Risk is high.")
             with a2:
-                st.subheader("🛡️ Risk Parameters")
-                st.write(f"**Stop Loss:** {res['base_low']:.2f} (Bottom of Unfilled Order Candle)")
-                st.write(f"**White Area Ceiling:** {res['base_high']:.2f}")
+                st.subheader("🛡️ Strategy Bounds")
+                st.write(f"**Pattern Anchor Date:** {res['base_date'].strftime('%Y-%m-%d')}")
+                st.write(f"**Stop Loss (Base Low):** {res['base_low']:.2f}")
 
         # --- THE CHART ---
         fig = go.Figure()
@@ -141,26 +141,33 @@ if ticker_to_run:
         fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='yellow', width=1.5), name='EMA 50'))
         
         if res['found']:
+            # 1. Unfilled Order Candle (RED BOX)
             fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[df.index.get_loc(res['base_date'])+1], 
                           y0=res['base_low'], y1=res['base_high'],
                           fillcolor="rgba(255, 0, 0, 0.6)", line=dict(color="Red", width=2))
             
+            # 2. UNFILLED ORDER TEXT LABEL
+            fig.add_annotation(x=res['base_date'], y=res['base_high'], text="UNFILLED ORDER CANDLE",
+                               showarrow=True, arrowhead=2, arrowcolor="red", ax=0, ay=-40,
+                               bgcolor="red", font=dict(color="white"))
+
+            # 3. LIGHT BLUE WHITE AREA (THE SKY)
             fig.add_shape(type="rect", x0=res['base_date'], x1=df.index[-1], 
                           y0=res['base_high'], y1=df['High'].max() * 1.15,
                           fillcolor="rgba(173, 216, 230, 0.15)", line=dict(width=0))
             
+            # 4. WATERMARK: "WHITE AREA"
             fig.add_annotation(
-                x=df.index[int(len(df)/2 + df.index.get_loc(res['base_date'])/2)],
+                x=df.index[int((len(df) + df.index.get_loc(res['base_date']))/2)], # Centered in the zone
                 y=(res['base_high'] + df['High'].max()) / 2,
                 text="WHITE AREA",
-                font=dict(color="rgba(173, 216, 230, 0.3)", size=40),
-                showarrow=False, textangle=-15
+                font=dict(color="rgba(173, 216, 230, 0.25)", size=50),
+                showarrow=False, textangle=-20
             )
             fig.add_hline(y=res['base_high'], line_color="red", line_dash="dot", annotation_text=f"CEILING: {res['base_high']:.2f}")
 
-        fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10))
+        fig.update_layout(template="plotly_dark", height=650, xaxis_rangeslider_visible=False, margin=dict(l=10, r=10, t=50, b=10))
         st.plotly_chart(fig, use_container_width=True)
 
-        # --- VERDICT ---
         if not res['found']:
             st.error(f"❌ No valid 1-2-4 setup found for {res['ticker']} in 60d scan.")
