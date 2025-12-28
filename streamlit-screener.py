@@ -113,6 +113,9 @@ if ticker_to_run:
     df, res = run_analysis(ticker_to_run, is_psx)
     
     if df is not None:
+        # DISPLAY CURRENT SELECTED SHARE
+        st.markdown(f"## 🏢 {res['name']} ({res['ticker']})")
+        st.markdown(f"**Current Status:** {'🟢 ACTIVE SIGNAL' if all([res['ratio_pass'], res['white_area_pass'], res['momentum_pass'], res['pulse_pass']]) else '⚪ MONITORING'}")
         # Metrics Header
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Current Price", f"{res['price']:.2f}")
