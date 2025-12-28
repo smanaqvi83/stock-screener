@@ -11,7 +11,7 @@ def get_commit_id():
     try:
         return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v3.3.0-UI-Blocks-Active"
+        return "v3.4.0-Full-UI-Restored"
 
 COMMIT_ID = get_commit_id()
 SYNC_TIME = datetime.now().strftime("%H:%M:%S")
@@ -19,13 +19,25 @@ SYNC_TIME = datetime.now().strftime("%H:%M:%S")
 # --- PAGE CONFIG ---
 st.set_page_config(page_title="QuantFlow Hunter Pro", layout="wide", page_icon="🎯")
 
-# --- SIDEBAR ---
+# --- SIDEBAR: AUTH & SELECTION ---
 st.sidebar.header("System Status")
 st.sidebar.success(f"**Build:** {COMMIT_ID}\n\n**Sync:** {SYNC_TIME}")
 
+st.sidebar.header("Market Selection")
 market_choice = st.sidebar.radio("Select Market", ["PSX (Pakistan)", "NYSE/NASDAQ (US)"])
-manual_ticker = st.sidebar.text_input("Ticker Symbol", value="SYS")
-ticker_to_run = manual_ticker.upper()
+
+# --- RESTORED DROPDOWN LOGIC ---
+psx_list = ["SYS", "LUCK", "HUBC", "ENGRO", "PPL", "OGDC", "MCB", "EFERT", "PIBTL"]
+us_list = ["TSLA", "NVDA", "AAPL", "MSFT", "AMD", "ORCL"]
+
+selected_preset = st.sidebar.selectbox("Preset List", psx_list if market_choice == "PSX (Pakistan)" else us_list)
+manual_ticker = st.sidebar.text_input("OR Type Manual Symbol (e.g. OGDC)")
+
+# Manual input takes priority
+ticker_to_run = manual_ticker.upper() if manual_ticker else selected_preset
+
+st.sidebar.markdown("---")
+st.sidebar.caption(f"**Instance:** Strategic Hunter v3")
 
 # --- THE ENGINE ---
 def run_hunter_engine(symbol, is_psx):
@@ -33,12 +45,11 @@ def run_hunter_engine(symbol, is_psx):
     ticker_obj = yf.Ticker(ticker_str)
     df = ticker_obj.history(period="75d", interval="1d")
     
-    if df.empty: return None, {"found": False}
+    if df.empty: return None, {"found": False, "ticker": ticker_str}
     
     df['Size'] = df['High'] - df['Low']
     df['EMA20'] = df['Close'].ewm(span=20, adjust=False).mean()
     
-    # Hunter Cache
     valid_setups = []
     
     for i in range(2, len(df)-1):
@@ -65,8 +76,8 @@ def run_hunter_engine(symbol, is_psx):
     res = {"ticker": ticker_str, "price": float(df['Close'].iloc[-1]), "found": False}
     
     if valid_setups:
-        # Prioritize Pristine, then Strength
         res["found"] = True
+        # Hunter selects Best (Pristine first, then Strongest)
         best = max(valid_setups, key=lambda x: (x['is_pristine'], x['strength']))
         res.update(best)
         res["distance_pct"] = ((res["price"] - res["high"]) / res["high"]) * 100
@@ -75,12 +86,13 @@ def run_hunter_engine(symbol, is_psx):
 
 # --- MAIN UI ---
 if ticker_to_run:
-    df, res = run_hunter_engine(ticker_to_run, market_choice == "PSX (Pakistan)")
+    with st.spinner(f'Hunter searching {ticker_to_run}...'):
+        df, res = run_hunter_engine(ticker_to_run, market_choice == "PSX (Pakistan)")
     
     if df is not None:
         st.header(f"🏢 {res['ticker']} Analysis Dashboard")
         
-        # --- BLOCKS (METRICS) ---
+        # --- TOP METRIC BLOCKS ---
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Live Price", f"{res['price']:.2f}")
         
@@ -88,28 +100,35 @@ if ticker_to_run:
             m2.metric("Anchor Ceiling", f"{res['high']:.2f}")
             m3.metric("Status", "PRISTINE" if res['is_pristine'] else "VIOLATED", 
                       delta=f"{res['violation_count']} Dips" if not res['is_pristine'] else "Clean")
-            m4.metric("Age", f"{res['age']} Days")
+            m4.metric("Anchor Age", f"{res['age']} Days")
             
-            # --- BUY ALERT BOX ---
+            # --- STRATEGIC ALERT BOX ---
             if res['is_pristine'] and res['distance_pct'] < 2.5:
-                st.success(f"🎯 **BUY ZONE:** Price is {res['distance_pct']:.2f}% from the {res['age']}-day Pristine Anchor.")
+                st.success(f"🎯 **BUY ALERT:** Price is {res['distance_pct']:.2f}% from the {res['age']}-day Pristine Anchor.")
             elif not res['is_pristine']:
-                st.error(f"⚠️ **VIOLATED SETUP:** This anchor was tested {res['violation_count']} times. Not Pristine.")
-        
+                st.error(f"⚠️ **VIOLATED SETUP:** Anchor tested {res['violation_count']} times. Not Pristine.")
+        else:
+            m2.metric("Anchor Ceiling", "None")
+            m3.metric("Status", "N/A")
+            m4.metric("Anchor Age", "N/A")
+            st.warning("❌ No valid 1-2-4 setup found in history.")
+
         # --- THE CHART ---
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price")])
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='cyan', width=1.2), name='EMA 20'))
+        fig.add_trace(go.Scatter(x=df.index, y=df['EMA20'], line=dict(color='cyan', width=1.5), name='EMA 20'))
         
         if res['found']:
-            box_color = "rgba(0, 255, 255, 0.4)" if res['is_pristine'] else "rgba(255, 165, 0, 0.3)"
+            # Box Color Logic
+            box_fill = "rgba(0, 255, 255, 0.4)" if res['is_pristine'] else "rgba(255, 165, 0, 0.3)"
             fig.add_shape(type="rect", x0=res['date'], x1=df.index[df.index.get_loc(res['date'])+1], 
-                          y0=res['low'], y1=res['high'], fillcolor=box_color, line=dict(color="Yellow", width=2))
+                          y0=res['low'], y1=res['high'], fillcolor=box_fill, line=dict(color="Yellow", width=2))
             
+            # White Area (Localized)
             fig.add_shape(type="rect", x0=res['date'], x1=df.index[-1], y0=res['high'], y1=res['leg_out_high'],
                           fillcolor="rgba(173, 216, 230, 0.15)", line=dict(width=0))
             
             fig.add_hline(y=res['high'], line_color="red", line_dash="dot")
-            fig.add_annotation(x=res['date'], y=res['high'], text="UNFILLED ANCHOR", showarrow=True, bgcolor="cyan")
+            fig.add_annotation(x=res['date'], y=res['high'], text=f"ANCHOR ({res['age']}d)", showarrow=True, bgcolor="cyan")
 
-        fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False)
+        fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False, margin=dict(t=10, b=10))
         st.plotly_chart(fig, use_container_width=True)
