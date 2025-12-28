@@ -11,125 +11,100 @@ def get_commit_id():
     try:
         return subprocess.check_output(['git', 'rev-parse', '--short', 'HEAD']).decode('ascii').strip()
     except:
-        return "v4.2.0-Blue-EMA-Pulse"
+        return "v4.4.0-Zone-Mapper-Active"
 
 COMMIT_ID = get_commit_id()
 SYNC_TIME = datetime.now().strftime("%H:%M:%S")
 
-# --- 2. PAGE CONFIGURATION ---
-st.set_page_config(page_title="QuantFlow Hunter Pro", layout="wide", page_icon="🎯")
+st.set_page_config(page_title="QuantFlow Zone Mapper", layout="wide", page_icon="🎯")
 
-# --- 3. SIDEBAR ---
+# --- 2. SIDEBAR ---
 st.sidebar.header("System Status")
 st.sidebar.success(f"**Build:** {COMMIT_ID}\n**Sync:** {SYNC_TIME}")
-
 market_choice = st.sidebar.radio("Select Market", ["PSX (Pakistan)", "NYSE/NASDAQ (US)"])
-psx_list = ["SYS", "LUCK", "HUBC", "ENGRO", "PPL", "OGDC", "MCB", "EFERT", "PIBTL"]
-us_list = ["TSLA", "NVDA", "AAPL", "MSFT", "AMD", "ORCL"]
+ticker_to_run = st.sidebar.text_input("Ticker Symbol", value="SYS").upper()
 
-selected_preset = st.sidebar.selectbox("Preset List", psx_list if market_choice == "PSX (Pakistan)" else us_list)
-manual_ticker = st.sidebar.text_input("OR Type Manual Symbol")
-ticker_to_run = manual_ticker.upper() if manual_ticker else selected_preset
-
-# --- 4. THE HUNTER ENGINE ---
-def run_hunter_engine(symbol, is_psx):
+# --- 3. THE ZONE ENGINE ---
+def run_zone_mapper(symbol, is_psx):
     ticker_str = f"{symbol}.KA" if is_psx else symbol
     ticker_obj = yf.Ticker(ticker_str)
-    # Fetch 100 days to ensure EMA 50 has enough data to stabilize
-    df = ticker_obj.history(period="100d", interval="1d") 
+    df = ticker_obj.history(period="120d", interval="1d") 
     
-    if df.empty: return None, {"found": False, "ticker": ticker_str}
+    if df.empty: return None, []
     
-    # 30/50 EMA Calculation
-    df['EMA30'] = df['Close'].ewm(span=30, adjust=False).mean()
-    df['EMA50'] = df['Close'].ewm(span=50, adjust=False).mean()
-    
-    # TR/ATR and Volume
     df['Size'] = df['High'] - df['Low']
-    df['TR'] = np.maximum(df['High'] - df['Low'], 
-                np.maximum(abs(df['High'] - df['Close'].shift(1)), 
-                           abs(df['Low'] - df['Close'].shift(1))))
-    df['ATR'] = df['TR'].rolling(window=14).mean()
-    df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
-    
-    valid_setups = []
+    all_zones = []
+
+    # SCAN FOR EVERY POTENTIAL UNFILLED ORDER CANDLE
     for i in range(2, len(df)-1):
         leg_in, base, leg_out = df['Size'].iloc[i-1], df['Size'].iloc[i], df['Size'].iloc[i+1]
-        if base > 0 and leg_in >= 2*base and leg_out >= 4*base:
+        
+        # We look for the "Structure": Leg In -> Base -> Leg Out
+        if base > 0 and leg_in >= 1.5*base and leg_out >= 2*base:
             base_high = float(df['High'].iloc[i])
+            base_low = float(df['Low'].iloc[i])
+            
+            # CHECK FOR VIOLATION (Is it still unfilled?)
             post_df = df.iloc[i+1:]
             violations = len(post_df[post_df['Low'] < base_high])
-            if violations == 0:
-                valid_setups.append({
-                    "date": df.index[i], "high": base_high, "low": float(df['Low'].iloc[i]),
-                    "leg_out_high": float(df['High'].iloc[i+1]), "strength": leg_out / base, "age": len(post_df)
-                })
+            
+            # Categorize the Zone
+            if leg_out >= 4*base and violations == 0:
+                zone_type = "PRISTINE (1-2-4)"
+                color = "rgba(0, 255, 255, 0.6)" # Cyan
+            elif leg_out >= 4*base and violations > 0:
+                zone_type = "VIOLATED (1-2-4)"
+                color = "rgba(255, 165, 0, 0.4)" # Orange
+            else:
+                zone_type = "WEAK BASE"
+                color = "rgba(128, 128, 128, 0.3)" # Gray
 
-    ema30, ema50 = df['EMA30'].iloc[-1], df['EMA50'].iloc[-1]
-    res = {
-        "ticker": ticker_str, "price": float(df['Close'].iloc[-1]), "found": False,
-        "tr_atr": df['TR'].iloc[-1] / df['ATR'].iloc[-1],
-        "vol_ratio": df['Volume'].iloc[-1] / df['Vol_Avg'].iloc[-1] if df['Vol_Avg'].iloc[-1] > 0 else 0,
-        "ema_status": "BULLISH" if ema30 > ema50 else "BEARISH",
-        "ema_diff": ((ema30 - ema50) / ema50) * 100
-    }
-    
-    if valid_setups:
-        res["found"] = True
-        best = max(valid_setups, key=lambda x: x['strength'])
-        res.update(best)
-        res["dist"] = ((res["price"] - res["high"]) / res["high"]) * 100
-        
-        # RELIABILITY SCORE
-        score = 40 if res['ema_status'] == "BULLISH" else 20
-        score += min(res['age'], 30)
-        if res['tr_atr'] > 1.0: score += 15
-        if res['vol_ratio'] > 1.1: score += 15
-        res["score"] = score
+            all_zones.append({
+                "date": df.index[i],
+                "high": base_high,
+                "low": base_low,
+                "type": zone_type,
+                "color": color,
+                "leg_out": leg_out / base,
+                "violations": violations
+            })
 
-    return df, res
+    return df, all_zones
 
-# --- 5. MAIN UI ---
+# --- 4. MAIN UI ---
 if ticker_to_run:
-    df, res = run_hunter_engine(ticker_to_run, market_choice == "PSX (Pakistan)")
+    df, zones = run_zone_mapper(ticker_to_run, market_choice == "PSX (Pakistan)")
     
     if df is not None:
-        st.header(f"📊 {res['ticker']} Dashboard")
+        st.header(f"🎯 Zone Mapper: {ticker_to_run}")
         
-        # Metric Row
-        m1, m2, m3, m4, m5 = st.columns(5)
-        m1.metric("Live Price", f"{res['price']:.2f}")
-        m2.metric("Trend (30/50 EMA)", res['ema_status'], delta=f"{res['ema_diff']:.2f}% Gap")
-        m3.metric("Power (TR/ATR)", f"{res['tr_atr']:.2f}x")
-        m4.metric("Vol Multiplier", f"{res['vol_ratio']:.2f}x")
-        if res['found']:
-            m5.metric("Hunter Score", f"{res['score']}/100")
-
-        # Verdict Section
-        st.markdown("---")
-        if res['found']:
-            v1, v2 = st.columns([1, 2])
-            if res['dist'] < 3.5 and res['ema_status'] == "BULLISH":
-                v1.success("🛡️ VERDICT: BUY AUTHORIZED")
-                v2.success(f"Confirmed: {res['ticker']} is near {res['high']:.2f}. Trend is UP.")
-            else:
-                v1.info("🛡️ VERDICT: MONITORING")
-                v2.write(f"Price is {res['dist']:.1f}% from anchor. Waiting for optimal entry.")
+        # Summary Row
+        c1, c2, c3 = st.columns(3)
+        c1.metric("Live Price", f"{df['Close'].iloc[-1]:.2f}")
+        c2.metric("Total Zones Found", len(zones))
+        pristine_count = len([z for z in zones if "PRISTINE" in z['type']])
+        c3.metric("Pristine Anchors", pristine_count)
 
         # --- THE CHART ---
         fig = go.Figure(data=[go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name="Price")])
-        
-        # EMA 30 (NOW BLUE/CYAN)
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA30'], line=dict(color='#00d1ff', width=2), name='EMA 30 (Fast)'))
-        
-        # EMA 50 (ORANGE)
-        fig.add_trace(go.Scatter(x=df.index, y=df['EMA50'], line=dict(color='#ff9900', width=2), name='EMA 50 (Slow)'))
 
-        if res['found']:
-            # Anchor Box
-            fig.add_shape(type="rect", x0=res['date'], x1=df.index[df.index.get_loc(res['date'])+1], 
-                          y0=res['low'], y1=res['high'], fillcolor="rgba(0, 255, 255, 0.4)", line=dict(color="Yellow", width=3))
-            fig.add_hline(y=res['high'], line_color="red", line_dash="dot")
+        # PLOT EVERY ZONE FOUND
+        for z in zones:
+            # Draw the box on the candle
+            fig.add_shape(type="rect", x0=z['date'], x1=df.index[df.index.get_loc(z['date'])+1], 
+                          y0=z['low'], y1=z['high'], fillcolor=z['color'], line=dict(width=1))
+            
+            # Extend the "Demand Zone" line to the right
+            fig.add_shape(type="line", x0=z['date'], x1=df.index[-1], y0=z['high'], y1=z['high'],
+                          line=dict(color=z['color'], width=1, dash="dot"))
 
-        fig.update_layout(template="plotly_dark", height=600, xaxis_rangeslider_visible=False)
+        fig.update_layout(template="plotly_dark", height=700, xaxis_rangeslider_visible=False)
         st.plotly_chart(fig, use_container_width=True)
+
+        # --- ZONE AUDIT LOG ---
+        st.subheader("📋 Unfilled Candle Audit Log")
+        if zones:
+            zone_df = pd.DataFrame(zones).sort_values(by="date", ascending=False)
+            st.table(zone_df[['date', 'high', 'type', 'leg_out', 'violations']])
+        else:
+            st.info("No institutional bases detected in this 120-day period.")
